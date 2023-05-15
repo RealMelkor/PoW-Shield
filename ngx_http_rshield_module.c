@@ -133,11 +133,14 @@ ngx_module_t  ngx_http_rshield_module = {
 
 #define CHALLENGE_DATA_LENGTH 32
 #define WORK 0x0000FFFF
+#define TABLE_SIZE 8192 /* needs to be a power of 2 */
 struct pow_challenge {
 	unsigned char data[CHALLENGE_DATA_LENGTH + sizeof(int)];
 	uint64_t id;
 	unsigned completed:1;
+	struct pow_challenge *next;
 };
+struct pow_challenge challenges[TABLE_SIZE] = {0};
 
 struct pow_challenge rshield_new_challenge() {
 	struct pow_challenge challenge;
@@ -173,7 +176,6 @@ rshield_setcookie(ngx_http_request_t *r, const char* name, const char *data,
 	if (v == NULL) {
 		return -1;
 	}
-	ngx_str_set(&v->value, "bar");
 	v->hash = rand();
 	v->key.len = sizeof("Set-Cookie") - 1;
 	v->key.data = (u_char *)"Set-Cookie";
@@ -224,11 +226,21 @@ ngx_http_rshield_handler(ngx_http_request_t *r)
 	if (answer)
 		canswer = atoi((const char *)answer);
 	if (canswer) {
-		ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, 
-				"cookie value : %d %d", cid, canswer);
 		/* check if cid is in hash table */
+		do {
+			struct pow_challenge *challenge =
+				&challenges[cid & (TABLE_SIZE - 1)];
+			if (!challenge->id || challenge->id != cid)
+				break;
+			if (challenge->completed)
+				return NGX_DECLINED;
+			if (rshield_verify_challenge(*challenge, canswer))
+				break;
+			challenge->completed = 1;
+			return NGX_DECLINED;
+		} while (0);
 		/* verify challenge */
-		return NGX_DECLINED;
+		id = NULL;
 	}
 
 	if (ngx_http_complex_value(r, alcf->realm, &realm) != NGX_OK) {
@@ -240,8 +252,10 @@ ngx_http_rshield_handler(ngx_http_request_t *r)
 	}
 
 	if (!id || !rshield_getcookie(r, &shield_challenge)) {
+
 		struct pow_challenge challenge = rshield_new_challenge();
 		char idtmp[32];
+
 		len = base64_encode(challenge.data, CHALLENGE_DATA_LENGTH,
 				(unsigned char*)base64, sizeof(base64));
 		if (len == -1) {
@@ -256,6 +270,8 @@ ngx_http_rshield_handler(ngx_http_request_t *r)
 					sizeof(buf))) {
 			return NGX_HTTP_INTERNAL_SERVER_ERROR;
 		}
+		/* TODO: if already exist insert in linked list */
+		challenges[challenge.id & (TABLE_SIZE - 1)] = challenge;
 	}
 
 	r->headers_out.status = NGX_HTTP_OK;
@@ -280,7 +296,8 @@ ngx_http_rshield_handler(ngx_http_request_t *r)
 	out.buf = b;
 	out.next = NULL;
 
-	return ngx_http_output_filter(r, &out);
+	ngx_http_output_filter(r, &out);
+	return NGX_HTTP_OK;
 }
 
 static void *
