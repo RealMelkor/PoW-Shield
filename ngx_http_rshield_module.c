@@ -35,7 +35,7 @@ const char html_page[] =
 "<p id=\"hash-rate\"></p>"
 "<script>"
 "function setCookie(cname, cvalue) {"
-	"document.cookie = cname + \"=\" + cvalue + \";path=/;SameSite=Lax\";"
+	"document.cookie = cname + \"=\" + cvalue + \";path=/;SameSite=Strict\";"
 "}"
 "function getCookie(cname) {"
 	"let name = cname + \"=\";"
@@ -74,7 +74,8 @@ const char html_page[] =
 	"}"
 	"setCookie(\"pow-shield-answer\", bufView[8]);"
 	"document.cookie = \"pow-shield-challenge=;"
-		"expires=Thu, 01 Jan 1970 00:00:00 UTC;path=/;SameSite=Lax\";"
+		"expires=Thu, 01 Jan 1970 00:00:00 UTC;"
+		"path=/;SameSite=Strict\";"
 	"window.location.reload();"
 "}"
 "pow();"
@@ -196,7 +197,7 @@ rshield_setcookie(ngx_http_request_t *r, const char* name, const char *data,
 			char *buf, size_t buflen)
 {
 	ngx_table_elt_t			*v;
-	const char cookie[] = "%s=%s;path=/;SameSite=Lax";
+	const char cookie[] = "%s=%s;path=/;SameSite=Strict";
 	size_t len;
 
 	v = ngx_list_push(&r->headers_out.headers);
@@ -252,28 +253,25 @@ ngx_http_rshield_handler(ngx_http_request_t *r)
 		answer = rshield_getcookie(r, &shield_answer);
 	if (answer)
 		canswer = atoi((const char *)answer);
-	if (canswer) {
-		do {
-			struct pow_challenge *challenge =
-				&challenges[cid & TABLE_BITS];
-			while (challenge && (challenge->id &&
-						challenge->id != cid)) {
-				challenge = challenge->next;
-			}
-			if (!challenge) break;
-			if (challenge->completed) {
-				if (!rshield_use_challenge(challenge))
-					return NGX_DECLINED;
-				else
-					break;
-			}
-			if (rshield_verify_challenge(*challenge, canswer))
-				break;
-			challenge->completed = 1;
-			return NGX_DECLINED;
-		} while (0);
-		id = NULL;
+	while (answer) {
+		struct pow_challenge *challenge =
+			&challenges[cid & TABLE_BITS];
+		while (challenge && (challenge->id &&
+					challenge->id != cid)) {
+			challenge = challenge->next;
+		}
+		if (!challenge || challenge->id != cid) break;
+		if (challenge->completed) {
+			if (!rshield_use_challenge(challenge))
+				return NGX_DECLINED;
+			break;
+		}
+		if (rshield_verify_challenge(*challenge, canswer)) break;
+		challenge->completed = 1;
+		return NGX_DECLINED;
 	}
+	if (answer)
+		id = NULL;
 
 	if (ngx_http_complex_value(r, alcf->realm, &realm) != NGX_OK) {
 		return NGX_ERROR;
