@@ -8,6 +8,10 @@
 #include "base64.c"
 #include "sha256.c"
 
+#if nginx_version < 1023000
+#define LEGACY
+#endif
+
 #define shield_challenge_str "pow-shield-challenge"
 ngx_str_t shield_challenge = {
 	sizeof(shield_challenge_str) - 1,
@@ -216,6 +220,7 @@ rshield_setcookie(ngx_http_request_t *r, const char* name, const char *data,
 static u_char *
 rshield_getcookie(ngx_http_request_t *r, ngx_str_t *name)
 {
+#ifdef LEGACY
 	ngx_str_t value;
 	ngx_int_t n;
 
@@ -225,6 +230,14 @@ rshield_getcookie(ngx_http_request_t *r, ngx_str_t *name)
 		return NULL;
 	}
 	return value.data;
+#else
+	ngx_str_t value;
+	ngx_table_elt_t *elt;
+	elt = ngx_http_parse_multi_header_lines(r, r->headers_in.cookie, name,
+							&value);
+	if (!elt) return NULL;
+	return value.data;
+#endif
 }
 
 static ngx_int_t
