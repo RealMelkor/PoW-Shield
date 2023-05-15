@@ -73,6 +73,8 @@ const char html_page[] =
 		"bufView[8]++;"
 	"}"
 	"setCookie(\"pow-shield-answer\", bufView[8]);"
+	"document.cookie = \"pow-shield-challenge=; "
+		"expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;\";"
 	"window.location.reload();"
 "}"
 "pow();"
@@ -133,18 +135,23 @@ ngx_module_t  ngx_http_rshield_module = {
 
 #define CHALLENGE_DATA_LENGTH 32
 #define WORK 0x0000FFFF
-#define TABLE_SIZE 8192 /* needs to be a power of 2 */
+#define TABLE_SIZE 131072 /* needs to be a power of 2 */
+#define TABLE_BITS (TABLE_SIZE - 1)
+#define EXPIRATION 600 /* seconds before expiration */
+#define MAX_USAGE 400 /* usage count before invalidity */
 struct pow_challenge {
 	unsigned char data[CHALLENGE_DATA_LENGTH + sizeof(int)];
 	uint64_t id;
+	unsigned int used;
+	time_t created;
 	unsigned completed:1;
 	struct pow_challenge *next;
 };
 struct pow_challenge challenges[TABLE_SIZE] = {0};
 
 struct pow_challenge rshield_new_challenge() {
-	struct pow_challenge challenge;
-	challenge.completed = 0;
+	struct pow_challenge challenge = {0};
+	challenge.created = time(NULL);
 #ifdef __linux__
         getrandom(&challenge.id, sizeof(challenge.id), GRND_RANDOM);
         getrandom(challenge.data, sizeof(challenge.data), GRND_RANDOM);
@@ -155,7 +162,27 @@ struct pow_challenge rshield_new_challenge() {
 	return challenge;
 }
 
-int rshield_verify_challenge(struct pow_challenge challenge, uint32_t answer) {
+static int
+rshield_is_expired(struct pow_challenge *challenge, time_t now)
+{
+	return -(now - challenge->created > EXPIRATION);
+}
+
+static int
+rshield_use_challenge(struct pow_challenge *challenge)
+{
+	challenge->used++;
+	if (challenge->used >= MAX_USAGE ||
+			time(NULL) - challenge->created > EXPIRATION) {
+		memset(challenge, 0, sizeof(*challenge));
+		return -1;
+	}
+	return 0;
+}
+
+static int
+rshield_verify_challenge(struct pow_challenge challenge, uint32_t answer)
+{
 	unsigned char hash[SHA256_BLOCK_SIZE];
 	uint32_t *hash_u32 = (void*)hash;
 	memcpy(&challenge.data[CHALLENGE_DATA_LENGTH],
@@ -226,20 +253,25 @@ ngx_http_rshield_handler(ngx_http_request_t *r)
 	if (answer)
 		canswer = atoi((const char *)answer);
 	if (canswer) {
-		/* check if cid is in hash table */
 		do {
 			struct pow_challenge *challenge =
-				&challenges[cid & (TABLE_SIZE - 1)];
-			if (!challenge->id || challenge->id != cid)
-				break;
-			if (challenge->completed)
-				return NGX_DECLINED;
+				&challenges[cid & TABLE_BITS];
+			while (challenge && (challenge->id &&
+						challenge->id != cid)) {
+				challenge = challenge->next;
+			}
+			if (!challenge) break;
+			if (challenge->completed) {
+				if (!rshield_use_challenge(challenge))
+					return NGX_DECLINED;
+				else
+					break;
+			}
 			if (rshield_verify_challenge(*challenge, canswer))
 				break;
 			challenge->completed = 1;
 			return NGX_DECLINED;
 		} while (0);
-		/* verify challenge */
 		id = NULL;
 	}
 
@@ -253,8 +285,9 @@ ngx_http_rshield_handler(ngx_http_request_t *r)
 
 	if (!id || !rshield_getcookie(r, &shield_challenge)) {
 
-		struct pow_challenge challenge = rshield_new_challenge();
+		struct pow_challenge challenge = rshield_new_challenge(), *c;
 		char idtmp[32];
+		time_t now;
 
 		len = base64_encode(challenge.data, CHALLENGE_DATA_LENGTH,
 				(unsigned char*)base64, sizeof(base64));
@@ -270,8 +303,21 @@ ngx_http_rshield_handler(ngx_http_request_t *r)
 					sizeof(buf))) {
 			return NGX_HTTP_INTERNAL_SERVER_ERROR;
 		}
-		/* TODO: if already exist insert in linked list */
-		challenges[challenge.id & (TABLE_SIZE - 1)] = challenge;
+		c = &challenges[challenge.id & TABLE_BITS];
+		now = time(NULL);
+		while (c->id && !rshield_is_expired(c, now)) {
+			if (c->next) {
+				c = c->next;
+				continue;
+			}
+			c->next = malloc(sizeof(challenge));
+			if (!c->next) {
+				return NGX_HTTP_INTERNAL_SERVER_ERROR;
+			}
+			c = c->next;
+			break;
+		}
+		*c = challenge;
 	}
 
 	r->headers_out.status = NGX_HTTP_OK;
