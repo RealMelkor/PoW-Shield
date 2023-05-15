@@ -35,7 +35,7 @@ const char html_page[] =
 "<p id=\"hash-rate\"></p>"
 "<script>"
 "function setCookie(cname, cvalue) {"
-	"document.cookie = cname + \"=\" + cvalue + \";path=/; SameSite=Lax\";"
+	"document.cookie = cname + \"=\" + cvalue + \";path=/;SameSite=Lax\";"
 "}"
 "function getCookie(cname) {"
 	"let name = cname + \"=\";"
@@ -73,8 +73,8 @@ const char html_page[] =
 		"bufView[8]++;"
 	"}"
 	"setCookie(\"pow-shield-answer\", bufView[8]);"
-	"document.cookie = \"pow-shield-challenge=; "
-		"expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;\";"
+	"document.cookie = \"pow-shield-challenge=;"
+		"expires=Thu, 01 Jan 1970 00:00:00 UTC;path=/;SameSite=Lax\";"
 	"window.location.reload();"
 "}"
 "pow();"
@@ -196,7 +196,7 @@ rshield_setcookie(ngx_http_request_t *r, const char* name, const char *data,
 			char *buf, size_t buflen)
 {
 	ngx_table_elt_t			*v;
-	const char cookie[] = "%s=%s; SameSite=Lax";
+	const char cookie[] = "%s=%s;path=/;SameSite=Lax";
 	size_t len;
 
 	v = ngx_list_push(&r->headers_out.headers);
