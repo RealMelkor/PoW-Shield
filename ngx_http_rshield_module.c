@@ -8,6 +8,8 @@
 #include "base64.c"
 #include "sha256.c"
 
+#define VERIFY_IP /* only allow one ip per challenge */
+
 #if nginx_version < 1023000
 #define LEGACY
 #endif
@@ -151,15 +153,64 @@ struct pow_challenge {
 	time_t created;
 	unsigned completed:1;
 	struct pow_challenge *next;
+#ifdef VERIFY_IP
+	uint32_t ip;
+#endif
 };
 struct pow_challenge challenges[TABLE_SIZE] = {0};
 
-struct pow_challenge rshield_new_challenge() {
+uint32_t
+fnv(void *buf, size_t len)
+{
+	uint32_t hval = 0;
+	unsigned char *bp = (unsigned char *)buf;
+	unsigned char *be = bp + len;
+	while (bp < be) {
+		hval *= 0x01000193;
+		hval ^= (uint32_t)*bp++;
+	}
+	return hval;
+}
+#define FNV(X) fnv(X, sizeof(X))
+
+uint32_t
+rshield_get_ip(ngx_http_request_t *r)
+{
+	struct sockaddr_in          *sin;
+#if (NGX_HAVE_INET6)
+	struct sockaddr_in6         *sin6;
+#endif
+	switch (r->connection->sockaddr->sa_family) {
+	case AF_INET:
+		sin = (struct sockaddr_in *) r->connection->sockaddr;
+		return sin->sin_addr.s_addr;
+#if (NGX_HAVE_INET6)
+	case AF_INET6:
+		sin6 = (struct sockaddr_in6 *) r->connection->sockaddr;
+		return FNV(sin6->sin6_addr.s6_addr);
+#endif
+	}
+	return 0;
+}
+
+struct pow_challenge
+rshield_new_challenge()
+{
 	struct pow_challenge challenge = {0};
 	challenge.created = time(NULL);
 #ifdef __linux__
-        getrandom(&challenge.id, sizeof(challenge.id), GRND_RANDOM);
-        getrandom(challenge.data, sizeof(challenge.data), GRND_RANDOM);
+	if (getrandom(&challenge.id, sizeof(challenge.id), GRND_RANDOM) !=
+			sizeof(challenge.id)) {
+		uint32_t *id = (uint32_t*)&challenge.id;
+		id[0] = rand();
+		id[1] = rand();
+	}
+	if (getrandom(challenge.data, sizeof(challenge.data), GRND_RANDOM) !=
+			sizeof(challenge.data)) {
+		for (size_t i = 0; i < sizeof(challenge.data); i++) {
+			challenge.data[i] = rand();
+		}
+	}
 #else
         arc4random_buf(&challenge.id, sizeof(challenge.id));
         arc4random_buf(challenge.data, sizeof(challenge.data));
@@ -275,9 +326,11 @@ ngx_http_rshield_handler(ngx_http_request_t *r)
 		}
 		if (!challenge || challenge->id != cid) break;
 		if (challenge->completed) {
-			if (!rshield_use_challenge(challenge))
-				return NGX_DECLINED;
-			break;
+			if (challenge->ip != rshield_get_ip(r))
+				break;
+			if (rshield_use_challenge(challenge))
+				break;
+			return NGX_DECLINED;
 		}
 		if (rshield_verify_challenge(*challenge, canswer)) break;
 		challenge->completed = 1;
@@ -329,6 +382,9 @@ ngx_http_rshield_handler(ngx_http_request_t *r)
 			break;
 		}
 		*c = challenge;
+#ifdef VERIFY_IP
+		c->ip = rshield_get_ip(r);
+#endif
 	}
 
 	r->headers_out.status = NGX_HTTP_OK;
