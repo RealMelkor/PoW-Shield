@@ -34,9 +34,9 @@ ngx_str_t shield_id = {
 
 const char html_page[] =
 "<!DOCTYPE html><html><head>"
-"<meta charset=\"utf-8\"><title>POW Shield</title>"
+"<meta charset=\"utf-8\"><title>PoW Shield</title>"
 "</head><body>"
-"<h1>POW Shield</h1>"
+"<h1>PoW Shield</h1>"
 "<noscript><p>Javascript required</p></noscript>"
 "<p id=\"hash-rate\"></p>"
 "<script>"
@@ -91,44 +91,44 @@ const char html_page[] =
 
 typedef struct {
 	ngx_http_complex_value_t  *realm;
-} ngx_http_rshield_loc_conf_t;
+} ngx_http_powshield_loc_conf_t;
 
 
-static ngx_int_t ngx_http_rshield_handler(ngx_http_request_t *r);
-static void *ngx_http_rshield_create_loc_conf(ngx_conf_t *cf);
-static char *ngx_http_rshield_merge_loc_conf(ngx_conf_t *cf,
+static ngx_int_t ngx_http_powshield_handler(ngx_http_request_t *r);
+static void *ngx_http_powshield_create_loc_conf(ngx_conf_t *cf);
+static char *ngx_http_powshield_merge_loc_conf(ngx_conf_t *cf,
 		void *parent, void *child);
-static ngx_int_t ngx_http_rshield_init(ngx_conf_t *cf);
+static ngx_int_t ngx_http_powshield_init(ngx_conf_t *cf);
 
-static ngx_command_t  ngx_http_rshield_commands[] = {
+static ngx_command_t  ngx_http_powshield_commands[] = {
 
-	{ ngx_string("rshield"),
+	{ ngx_string("powshield"),
 		NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF
 			|NGX_HTTP_LMT_CONF|NGX_CONF_TAKE1,
 		ngx_http_set_complex_value_slot,
 		NGX_HTTP_LOC_CONF_OFFSET,
-		offsetof(ngx_http_rshield_loc_conf_t, realm),
+		offsetof(ngx_http_powshield_loc_conf_t, realm),
 		NULL },
 
 	ngx_null_command
 };
 
-static ngx_http_module_t  ngx_http_rshield_module_ctx = {
+static ngx_http_module_t  ngx_http_powshield_module_ctx = {
 	NULL,					/* preconfiguration */
-	ngx_http_rshield_init,			/* postconfiguration */
+	ngx_http_powshield_init,			/* postconfiguration */
 	NULL,					/* create main configuration */
 	NULL,					/* init main configuration */
 	NULL,					/* create server configuration */
 	NULL,					/* merge server configuration */
-	ngx_http_rshield_create_loc_conf,	/* create location configuration */
-	ngx_http_rshield_merge_loc_conf		/* merge location configuration */
+	ngx_http_powshield_create_loc_conf,	/* create location configuration */
+	ngx_http_powshield_merge_loc_conf		/* merge location configuration */
 };
 
 
-ngx_module_t  ngx_http_rshield_module = {
+ngx_module_t  ngx_http_powshield_module = {
 	NGX_MODULE_V1,
-	&ngx_http_rshield_module_ctx,		/* module context */
-	ngx_http_rshield_commands,		/* module directives */
+	&ngx_http_powshield_module_ctx,		/* module context */
+	ngx_http_powshield_commands,		/* module directives */
 	NGX_HTTP_MODULE,			/* module type */
 	NULL,					/* init master */
 	NULL,					/* init module */
@@ -174,7 +174,7 @@ fnv(void *buf, size_t len)
 #define FNV(X) fnv(X, sizeof(X))
 
 uint32_t
-rshield_get_ip(ngx_http_request_t *r)
+powshield_get_ip(ngx_http_request_t *r)
 {
 	struct sockaddr_in          *sin;
 #if (NGX_HAVE_INET6)
@@ -194,7 +194,7 @@ rshield_get_ip(ngx_http_request_t *r)
 }
 
 struct pow_challenge
-rshield_new_challenge()
+powshield_new_challenge()
 {
 	struct pow_challenge challenge = {0};
 	challenge.created = time(NULL);
@@ -219,13 +219,13 @@ rshield_new_challenge()
 }
 
 static int
-rshield_is_expired(struct pow_challenge *challenge, time_t now)
+powshield_is_expired(struct pow_challenge *challenge, time_t now)
 {
 	return -(now - challenge->created > EXPIRATION);
 }
 
 static int
-rshield_use_challenge(struct pow_challenge *challenge)
+powshield_use_challenge(struct pow_challenge *challenge)
 {
 	challenge->used++;
 	if (challenge->used >= MAX_USAGE ||
@@ -237,7 +237,7 @@ rshield_use_challenge(struct pow_challenge *challenge)
 }
 
 static int
-rshield_verify_challenge(struct pow_challenge challenge, uint32_t answer)
+powshield_verify_challenge(struct pow_challenge challenge, uint32_t answer)
 {
 	unsigned char hash[SHA256_BLOCK_SIZE];
 	uint32_t *hash_u32 = (void*)hash;
@@ -248,7 +248,7 @@ rshield_verify_challenge(struct pow_challenge challenge, uint32_t answer)
 }
 
 static int
-rshield_setcookie(ngx_http_request_t *r, const char* name, const char *data,
+powshield_setcookie(ngx_http_request_t *r, const char* name, const char *data,
 			char *buf, size_t buflen)
 {
 	ngx_table_elt_t			*v;
@@ -269,7 +269,7 @@ rshield_setcookie(ngx_http_request_t *r, const char* name, const char *data,
 }
 
 static u_char *
-rshield_getcookie(ngx_http_request_t *r, ngx_str_t *name)
+powshield_getcookie(ngx_http_request_t *r, ngx_str_t *name)
 {
 #ifdef LEGACY
 	ngx_str_t value;
@@ -292,9 +292,9 @@ rshield_getcookie(ngx_http_request_t *r, ngx_str_t *name)
 }
 
 static ngx_int_t
-ngx_http_rshield_handler(ngx_http_request_t *r)
+ngx_http_powshield_handler(ngx_http_request_t *r)
 {
-	ngx_http_rshield_loc_conf_t	*alcf;
+	ngx_http_powshield_loc_conf_t	*alcf;
 	ngx_str_t			realm;
 	ngx_buf_t			*b;
 	ngx_chain_t			out;
@@ -303,18 +303,18 @@ ngx_http_rshield_handler(ngx_http_request_t *r)
 	uint64_t cid = 0;
 	int len, canswer = 0;
 
-	alcf = ngx_http_get_module_loc_conf(r, ngx_http_rshield_module);
+	alcf = ngx_http_get_module_loc_conf(r, ngx_http_powshield_module);
 	if (alcf->realm == NULL) {
 		return NGX_DECLINED;
 	}
 
-	id = rshield_getcookie(r, &shield_id);
+	id = powshield_getcookie(r, &shield_id);
 	if (id) {
 		cid = strtoull((const char*)id, NULL, 10);
 		if (!cid) id = NULL;
 	}
 	if (id)
-		answer = rshield_getcookie(r, &shield_answer);
+		answer = powshield_getcookie(r, &shield_answer);
 	if (answer)
 		canswer = atoi((const char *)answer);
 	while (answer) {
@@ -326,13 +326,13 @@ ngx_http_rshield_handler(ngx_http_request_t *r)
 		}
 		if (!challenge || challenge->id != cid) break;
 		if (challenge->completed) {
-			if (challenge->ip != rshield_get_ip(r))
+			if (challenge->ip != powshield_get_ip(r))
 				break;
-			if (rshield_use_challenge(challenge))
+			if (powshield_use_challenge(challenge))
 				break;
 			return NGX_DECLINED;
 		}
-		if (rshield_verify_challenge(*challenge, canswer)) break;
+		if (powshield_verify_challenge(*challenge, canswer)) break;
 		challenge->completed = 1;
 		return NGX_DECLINED;
 	}
@@ -347,9 +347,9 @@ ngx_http_rshield_handler(ngx_http_request_t *r)
 		return NGX_DECLINED;
 	}
 
-	if (!id || !rshield_getcookie(r, &shield_challenge)) {
+	if (!id || !powshield_getcookie(r, &shield_challenge)) {
 
-		struct pow_challenge challenge = rshield_new_challenge(), *c;
+		struct pow_challenge challenge = powshield_new_challenge(), *c;
 		char idtmp[32];
 		time_t now;
 
@@ -359,17 +359,17 @@ ngx_http_rshield_handler(ngx_http_request_t *r)
 			return NGX_HTTP_INTERNAL_SERVER_ERROR;
 		}
 		snprintf(idtmp, sizeof(idtmp), "%ld", challenge.id);
-		if (rshield_setcookie(r, shield_id_str, idtmp,
+		if (powshield_setcookie(r, shield_id_str, idtmp,
 					idbuf, sizeof(idbuf))) {
 			return NGX_HTTP_INTERNAL_SERVER_ERROR;
 		}
-		if (rshield_setcookie(r, shield_challenge_str, base64, buf,
+		if (powshield_setcookie(r, shield_challenge_str, base64, buf,
 					sizeof(buf))) {
 			return NGX_HTTP_INTERNAL_SERVER_ERROR;
 		}
 		c = &challenges[challenge.id & TABLE_BITS];
 		now = time(NULL);
-		while (c->id && !rshield_is_expired(c, now)) {
+		while (c->id && !powshield_is_expired(c, now)) {
 			if (c->next) {
 				c = c->next;
 				continue;
@@ -383,7 +383,7 @@ ngx_http_rshield_handler(ngx_http_request_t *r)
 		}
 		*c = challenge;
 #ifdef VERIFY_IP
-		c->ip = rshield_get_ip(r);
+		c->ip = powshield_get_ip(r);
 #endif
 	}
 
@@ -414,11 +414,11 @@ ngx_http_rshield_handler(ngx_http_request_t *r)
 }
 
 static void *
-ngx_http_rshield_create_loc_conf(ngx_conf_t *cf)
+ngx_http_powshield_create_loc_conf(ngx_conf_t *cf)
 {
-	ngx_http_rshield_loc_conf_t  *conf;
+	ngx_http_powshield_loc_conf_t  *conf;
 
-	conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_rshield_loc_conf_t));
+	conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_powshield_loc_conf_t));
 	if (conf == NULL) {
 		return NULL;
 	}
@@ -428,10 +428,10 @@ ngx_http_rshield_create_loc_conf(ngx_conf_t *cf)
 
 
 static char *
-ngx_http_rshield_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
+ngx_http_powshield_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 {
-	ngx_http_rshield_loc_conf_t  *prev = parent;
-	ngx_http_rshield_loc_conf_t  *conf = child;
+	ngx_http_powshield_loc_conf_t  *prev = parent;
+	ngx_http_powshield_loc_conf_t  *conf = child;
 
 	if (conf->realm == NULL) {
 		conf->realm = prev->realm;
@@ -441,7 +441,7 @@ ngx_http_rshield_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 }
 
 static ngx_int_t
-ngx_http_rshield_init(ngx_conf_t *cf)
+ngx_http_powshield_init(ngx_conf_t *cf)
 {
 	ngx_http_handler_pt        *h;
 	ngx_http_core_main_conf_t  *cmcf;
@@ -453,7 +453,7 @@ ngx_http_rshield_init(ngx_conf_t *cf)
 		return NGX_ERROR;
 	}
 
-	*h = ngx_http_rshield_handler;
+	*h = ngx_http_powshield_handler;
 
 	return NGX_OK;
 }
