@@ -326,8 +326,10 @@ ngx_http_powshield_handler(ngx_http_request_t *r)
 		}
 		if (!challenge || challenge->id != cid) break;
 		if (challenge->completed) {
+#ifdef VERIFY_IP
 			if (challenge->ip != powshield_get_ip(r))
 				break;
+#endif
 			if (powshield_use_challenge(challenge))
 				break;
 			return NGX_DECLINED;
