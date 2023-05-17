@@ -115,13 +115,13 @@ static ngx_command_t  ngx_http_powshield_commands[] = {
 
 static ngx_http_module_t  ngx_http_powshield_module_ctx = {
 	NULL,					/* preconfiguration */
-	ngx_http_powshield_init,			/* postconfiguration */
+	ngx_http_powshield_init,		/* postconfiguration */
 	NULL,					/* create main configuration */
 	NULL,					/* init main configuration */
 	NULL,					/* create server configuration */
 	NULL,					/* merge server configuration */
 	ngx_http_powshield_create_loc_conf,	/* create location configuration */
-	ngx_http_powshield_merge_loc_conf		/* merge location configuration */
+	ngx_http_powshield_merge_loc_conf	/* merge location configuration */
 };
 
 
@@ -152,12 +152,14 @@ struct pow_challenge {
 	unsigned int used;
 	time_t created;
 	unsigned completed:1;
-	struct pow_challenge *next;
+	struct pow_challenge *left;
+	struct pow_challenge *right;
 #ifdef VERIFY_IP
 	uint32_t ip;
 #endif
 };
-struct pow_challenge challenges[TABLE_SIZE] = {0};
+ngx_pool_t  *cf_pool = NULL;
+struct pow_challenge** challenges = NULL;
 
 uint32_t
 fnv(void *buf, size_t len)
@@ -222,6 +224,66 @@ static int
 powshield_is_expired(struct pow_challenge *challenge, time_t now)
 {
 	return -(now - challenge->created > EXPIRATION);
+}
+
+static int
+powshield_insert_challenge(struct pow_challenge challenge)
+{
+	uint64_t id = challenge.id;
+	unsigned int index = id & TABLE_BITS;
+	struct pow_challenge *ptr = challenges[index];
+	time_t now = time(NULL);
+	if (!ptr) {
+		challenges[index] = ngx_palloc(cf_pool, sizeof(challenge));
+		if (!challenges[index]) {
+			return -1;
+		}
+		*challenges[index] = challenge;
+		return 0;
+	}
+	while (ptr) {
+		struct pow_challenge **new = NULL;
+		if (!ptr->id || ptr->id == id ||
+				powshield_is_expired(ptr, now)) {
+			challenge.left = ptr->left;
+			challenge.right = ptr->right;
+			*ptr = challenge;
+			return 0;
+		}
+		if (ptr->id > id) {
+			if (ptr->left) {
+				ptr = ptr->left;
+				continue;
+			}
+			new = &ptr->left;
+		} else {
+			if (ptr->right) {
+				ptr = ptr->right;
+				continue;
+			}
+			new = &ptr->right;
+		}
+		*new = ngx_palloc(cf_pool, sizeof(challenge));
+		if (!*new) {
+			return -1;
+		}
+		**new = challenge;
+		return 0;
+	}
+	return -1;
+}
+
+static struct pow_challenge *
+powshield_get_challenge(ngx_http_request_t *r, uint64_t id) {
+	struct pow_challenge *ptr = challenges[id & TABLE_BITS];
+	int i = 0;
+	if (!ptr) return NULL;
+	while (ptr && ptr->id != id) {
+		if (ptr->id > id) ptr = ptr->left;
+		else ptr = ptr->right;
+		i++;
+	}
+	return ptr;
 }
 
 static int
@@ -318,13 +380,8 @@ ngx_http_powshield_handler(ngx_http_request_t *r)
 	if (answer)
 		canswer = atoi((const char *)answer);
 	while (answer) {
-		struct pow_challenge *challenge =
-			&challenges[cid & TABLE_BITS];
-		while (challenge && (challenge->id &&
-					challenge->id != cid)) {
-			challenge = challenge->next;
-		}
-		if (!challenge || challenge->id != cid) break;
+		struct pow_challenge *challenge = powshield_get_challenge(r, cid);
+		if (!challenge) break;
 		if (challenge->completed) {
 #ifdef VERIFY_IP
 			if (challenge->ip != powshield_get_ip(r))
@@ -351,9 +408,8 @@ ngx_http_powshield_handler(ngx_http_request_t *r)
 
 	if (!id || !powshield_getcookie(r, &shield_challenge)) {
 
-		struct pow_challenge challenge = powshield_new_challenge(), *c;
+		struct pow_challenge challenge = powshield_new_challenge();
 		char idtmp[32];
-		time_t now;
 
 		len = base64_encode(challenge.data, CHALLENGE_DATA_LENGTH,
 				(unsigned char*)base64, sizeof(base64));
@@ -369,24 +425,10 @@ ngx_http_powshield_handler(ngx_http_request_t *r)
 					sizeof(buf))) {
 			return NGX_HTTP_INTERNAL_SERVER_ERROR;
 		}
-		c = &challenges[challenge.id & TABLE_BITS];
-		now = time(NULL);
-		while (c->id && !powshield_is_expired(c, now)) {
-			if (c->next) {
-				c = c->next;
-				continue;
-			}
-			c->next = malloc(sizeof(challenge));
-			if (!c->next) {
-				return NGX_HTTP_INTERNAL_SERVER_ERROR;
-			}
-			c = c->next;
-			break;
-		}
-		*c = challenge;
 #ifdef VERIFY_IP
-		c->ip = powshield_get_ip(r);
+		challenge.ip = powshield_get_ip(r);
 #endif
+		powshield_insert_challenge(challenge);
 	}
 
 	r->headers_out.status = NGX_HTTP_OK;
@@ -456,6 +498,12 @@ ngx_http_powshield_init(ngx_conf_t *cf)
 	}
 
 	*h = ngx_http_powshield_handler;
+
+	challenges = ngx_pcalloc(cf->pool, sizeof(*challenges) * TABLE_SIZE);
+	if (!challenges) {
+		return NGX_ERROR;
+	}
+	cf_pool = cf->pool;
 
 	return NGX_OK;
 }
