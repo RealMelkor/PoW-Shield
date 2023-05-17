@@ -9,6 +9,8 @@
 #include "sha256.c"
 
 #define VERIFY_IP /* only allow one ip per challenge */
+#define WORK 0x0000FFFF
+#define WORK_STR "0x0000FFFF"
 
 #if nginx_version < 1023000
 #define LEGACY
@@ -41,7 +43,8 @@ const char html_page[] =
 "<p id=\"hash-rate\"></p>"
 "<script>"
 "function setCookie(cname, cvalue) {"
-	"document.cookie = cname + \"=\" + cvalue + \";path=/;SameSite=Strict\";"
+	"document.cookie = cname + \"=\" + cvalue + \";"
+				"path=/;SameSite=Strict\";"
 "}"
 "function getCookie(cname) {"
 	"let name = cname + \"=\";"
@@ -66,7 +69,7 @@ const char html_page[] =
 		"var h = new Uint8Array(await "
 			"crypto.subtle.digest(\"SHA-256\", data));"
 		"var view32 = new Uint32Array(h.buffer);"
-		"if (view32[0] < 0x0000FFFF) {"
+		"if (view32[0] < "WORK_STR") {"
 			"break;"
 		"}"
 		"if (bufView[8] % 10000 == 0) {"
@@ -141,11 +144,10 @@ ngx_module_t  ngx_http_powshield_module = {
 };
 
 #define CHALLENGE_DATA_LENGTH 32
-#define WORK 0x0000FFFF
 #define TABLE_SIZE 131072 /* needs to be a power of 2 */
 #define TABLE_BITS (TABLE_SIZE - 1)
 #define EXPIRATION 600 /* seconds before expiration */
-#define MAX_USAGE 400 /* usage count before invalidity */
+#define MAX_USAGE 200 /* usage count before invalidity */
 struct pow_challenge {
 	unsigned char data[CHALLENGE_DATA_LENGTH + sizeof(int)];
 	uint64_t id;
@@ -274,7 +276,7 @@ powshield_insert_challenge(struct pow_challenge challenge)
 }
 
 static struct pow_challenge *
-powshield_get_challenge(ngx_http_request_t *r, uint64_t id) {
+powshield_get_challenge(uint64_t id) {
 	struct pow_challenge *ptr = challenges[id & TABLE_BITS];
 	int i = 0;
 	if (!ptr) return NULL;
@@ -360,7 +362,7 @@ ngx_http_powshield_handler(ngx_http_request_t *r)
 	ngx_str_t			realm;
 	ngx_buf_t			*b;
 	ngx_chain_t			out;
-	char buf[1024], base64[128], idbuf[128];
+	char buf[1024], base64[CHALLENGE_DATA_LENGTH * 3 + 64], idbuf[128];
 	const u_char *answer = NULL, *id;
 	uint64_t cid = 0;
 	int len, canswer = 0;
@@ -380,7 +382,7 @@ ngx_http_powshield_handler(ngx_http_request_t *r)
 	if (answer)
 		canswer = atoi((const char *)answer);
 	while (answer) {
-		struct pow_challenge *challenge = powshield_get_challenge(r, cid);
+		struct pow_challenge *challenge = powshield_get_challenge(cid);
 		if (!challenge) break;
 		if (challenge->completed) {
 #ifdef VERIFY_IP
