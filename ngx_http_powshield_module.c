@@ -155,7 +155,7 @@ ngx_module_t  ngx_http_powshield_module = {
 #define MAX_USAGE 200 /* usage count before invalidity */
 struct pow_challenge {
 	ngx_rbtree_node_t	rbnode;
-	unsigned char		data[CHALLENGE_DATA_LENGTH + sizeof(int)];
+	unsigned char		data[CHALLENGE_DATA_LENGTH + sizeof(uint32_t)];
 	uint32_t		id;
 	unsigned int		used;
 	time_t			created;
