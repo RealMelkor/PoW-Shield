@@ -9,8 +9,8 @@
 #include "sha256.c"
 
 #define VERIFY_IP /* only allow one ip per challenge */
-#define WORK 0x0000FFFF
-#define WORK_STR "0x0000FFFF"
+#define WORK 0x00005FFF
+#define WORK_STR "0x00005FFF"
 
 #if nginx_version < 1023000
 #define LEGACY
@@ -60,25 +60,26 @@ const char html_page[] =
 	"}"
 	"return \"\";"
 "}"
-"data = Uint8Array.from(atob(getCookie(\"pow-shield-challenge\")) + "
+"var challenge = Uint8Array.from(atob(getCookie(\"pow-shield-challenge\")) + "
 			"\"\\0\\0\\0\\0\", c => c.charCodeAt(0));"
-"var bufView = new Uint32Array(data.buffer);"
-"async function pow() {"
-	"startTime = new Date();"
+"var hash = 0;"
+"var startTime = new Date();"
+"function updateHashRate() {"
+	"let timeDiff = (new Date() - startTime)/1000;"
+	"document.getElementById(\"hash-rate\").innerHTML =\"Hash-rate : \" +"
+		"String(Math.round(hash/timeDiff)) +\" h/s\";"
+"}"
+"async function pow(data, i) {"
+	"let bufView = new Uint32Array(data.buffer);"
+	"bufView[8] = i;"
 	"while (bufView[8] + 1 > -1) {"
-		"var h = new Uint8Array(await "
+		"let h = new Uint8Array(await "
 			"crypto.subtle.digest(\"SHA-256\", data));"
-		"var view32 = new Uint32Array(h.buffer);"
-		"if (view32[0] < "WORK_STR") {"
+		"let view32 = new Uint32Array(h.buffer);"
+		"if (view32[0] <= "WORK_STR") {"
 			"break;"
 		"}"
-		"if (bufView[8] % 10000 == 0) {"
-			"var timeDiff = (new Date() - startTime)/1000;"
-			"document.getElementById(\"hash-rate\").innerHTML ="
-				"\"Hash-rate : \" +"
-				"String(Math.round(bufView[8]/timeDiff)) +"
-				"\" h/s\";"
-		"}"
+		"hash++;"
 		"bufView[8]++;"
 	"}"
 	"setCookie(\"pow-shield-answer\", bufView[8]);"
@@ -87,7 +88,10 @@ const char html_page[] =
 		"path=/;SameSite=Strict\";"
 	"window.location.reload();"
 "}"
-"pow();"
+"setInterval(updateHashRate, 1000);"
+"pow(challenge.slice(0), 0x80000000);"
+"pow(challenge, 0);"
+"setTimeout(updateHashRate, 100);"
 "</script>"
 "</body></html>"
 ;
@@ -146,22 +150,28 @@ ngx_module_t  ngx_http_powshield_module = {
 #define CHALLENGE_DATA_LENGTH 32
 #define TABLE_SIZE 131072 /* needs to be a power of 2 */
 #define TABLE_BITS (TABLE_SIZE - 1)
-#define EXPIRATION 600 /* seconds before expiration */
+#define EXPIRATION 50 /* seconds before expiration */
+#define EXPIRATION_COMPLETED 600 /* seconds before expiration when completed */
 #define MAX_USAGE 200 /* usage count before invalidity */
 struct pow_challenge {
-	unsigned char data[CHALLENGE_DATA_LENGTH + sizeof(int)];
-	uint64_t id;
-	unsigned int used;
-	time_t created;
-	unsigned completed:1;
-	struct pow_challenge *left;
-	struct pow_challenge *right;
+	ngx_rbtree_node_t	rbnode;
+	unsigned char		data[CHALLENGE_DATA_LENGTH + sizeof(int)];
+	uint32_t		id;
+	unsigned int		used;
+	time_t			created;
+	unsigned		completed:1;
 #ifdef VERIFY_IP
-	uint32_t ip;
+	uint32_t		ip;
 #endif
 };
+
+struct pow_tree {
+    ngx_rbtree_t       rbtree;
+    ngx_rbtree_node_t  sentinel;
+};
+
+struct pow_tree* challenges = NULL;
 ngx_pool_t  *cf_pool = NULL;
-struct pow_challenge** challenges = NULL;
 
 uint32_t
 fnv(void *buf, size_t len)
@@ -204,11 +214,8 @@ powshield_new_challenge()
 	challenge.created = time(NULL);
 #ifdef __linux__
 	if (getrandom(&challenge.id, sizeof(challenge.id), GRND_RANDOM) !=
-			sizeof(challenge.id)) {
-		uint32_t *id = (uint32_t*)&challenge.id;
-		id[0] = rand();
-		id[1] = rand();
-	}
+			sizeof(challenge.id))
+		challenge.id = rand();
 	if (getrandom(challenge.data, sizeof(challenge.data), GRND_RANDOM) !=
 			sizeof(challenge.data)) {
 		for (size_t i = 0; i < sizeof(challenge.data); i++) {
@@ -225,75 +232,62 @@ powshield_new_challenge()
 static int
 powshield_is_expired(struct pow_challenge *challenge, time_t now)
 {
-	return -(now - challenge->created > EXPIRATION);
+	return -(now - challenge->created > (challenge->completed ?
+					EXPIRATION_COMPLETED : EXPIRATION));
 }
 
 static int
 powshield_insert_challenge(struct pow_challenge challenge)
 {
-	uint64_t id = challenge.id;
-	unsigned int index = id & TABLE_BITS;
-	struct pow_challenge *ptr = challenges[index];
-	time_t now = time(NULL);
-	if (!ptr) {
-		challenges[index] = ngx_palloc(cf_pool, sizeof(challenge));
-		if (!challenges[index]) {
-			return -1;
-		}
-		*challenges[index] = challenge;
-		return 0;
-	}
-	while (ptr) {
-		struct pow_challenge **new = NULL;
-		if (!ptr->id || ptr->id == id ||
-				powshield_is_expired(ptr, now)) {
-			challenge.left = ptr->left;
-			challenge.right = ptr->right;
-			*ptr = challenge;
-			return 0;
-		}
-		if (ptr->id > id) {
-			if (ptr->left) {
-				ptr = ptr->left;
-				continue;
-			}
-			new = &ptr->left;
-		} else {
-			if (ptr->right) {
-				ptr = ptr->right;
-				continue;
-			}
-			new = &ptr->right;
-		}
-		*new = ngx_palloc(cf_pool, sizeof(challenge));
-		if (!*new) {
-			return -1;
-		}
-		**new = challenge;
-		return 0;
-	}
-	return -1;
+	struct pow_challenge *cnode;
+	struct pow_tree *root = &challenges[challenge.id & TABLE_BITS];
+	ngx_rbtree_node_t  *node;
+
+	cnode = ngx_palloc(cf_pool, sizeof(challenge));
+	*cnode = challenge;
+
+	node = &cnode->rbnode;
+	node->key = cnode->id;
+
+	ngx_rbtree_insert(&root->rbtree, node);
+	return 0;
 }
 
 static struct pow_challenge *
-powshield_get_challenge(uint64_t id) {
-	struct pow_challenge *ptr = challenges[id & TABLE_BITS];
-	int i = 0;
-	if (!ptr) return NULL;
-	while (ptr && ptr->id != id) {
-		if (ptr->id > id) ptr = ptr->left;
-		else ptr = ptr->right;
-		i++;
+powshield_get_challenge(uint32_t id)
+{
+	struct pow_challenge	*n;
+	ngx_rbtree_t		*rbtree;
+	ngx_rbtree_node_t	*node, *sentinel;
+
+	rbtree = &challenges[id & TABLE_BITS].rbtree;
+	node = rbtree->root;
+	sentinel = rbtree->sentinel;
+
+	while (node != sentinel) {
+
+		n = (struct pow_challenge *) node;
+
+		if (id != (uint32_t)node->key) {
+			node = (id < node->key) ? node->left : node->right;
+			continue;
+		}
+
+		if (powshield_is_expired(n, time(NULL)))
+			return NULL;
+
+		return n;
 	}
-	return ptr;
+
+	return NULL;
 }
 
 static int
 powshield_use_challenge(struct pow_challenge *challenge)
 {
 	challenge->used++;
-	if (challenge->used >= MAX_USAGE ||
-			time(NULL) - challenge->created > EXPIRATION) {
+	if (challenge->used >= MAX_USAGE || time(NULL) - challenge->created >
+						EXPIRATION_COMPLETED) {
 		memset(challenge, 0, sizeof(*challenge));
 		return -1;
 	}
@@ -364,7 +358,7 @@ ngx_http_powshield_handler(ngx_http_request_t *r)
 	ngx_chain_t			out;
 	char buf[1024], base64[CHALLENGE_DATA_LENGTH * 3 + 64], idbuf[128];
 	const u_char *answer = NULL, *id;
-	uint64_t cid = 0;
+	uint32_t cid = 0;
 	int len, canswer = 0;
 
 	alcf = ngx_http_get_module_loc_conf(r, ngx_http_powshield_module);
@@ -374,7 +368,7 @@ ngx_http_powshield_handler(ngx_http_request_t *r)
 
 	id = powshield_getcookie(r, &shield_id);
 	if (id) {
-		cid = strtoull((const char*)id, NULL, 10);
+		cid = atol((const char*)id);//, NULL, 10);
 		if (!cid) id = NULL;
 	}
 	if (id)
@@ -418,7 +412,7 @@ ngx_http_powshield_handler(ngx_http_request_t *r)
 		if (len == -1) {
 			return NGX_HTTP_INTERNAL_SERVER_ERROR;
 		}
-		snprintf(idtmp, sizeof(idtmp), "%ld", challenge.id);
+		snprintf(idtmp, sizeof(idtmp), "%u", challenge.id);
 		if (powshield_setcookie(r, shield_id_str, idtmp,
 					idbuf, sizeof(idbuf))) {
 			return NGX_HTTP_INTERNAL_SERVER_ERROR;
@@ -434,7 +428,7 @@ ngx_http_powshield_handler(ngx_http_request_t *r)
 	}
 
 	r->headers_out.status = NGX_HTTP_OK;
-	r->headers_out.content_length_n = sizeof(html_page);
+	r->headers_out.content_length_n = sizeof(html_page) - 1;
 	r->headers_out.content_type.len = sizeof("text/html") - 1;
 	r->headers_out.content_type.data = (u_char *) "text/html";
 
@@ -472,7 +466,6 @@ ngx_http_powshield_create_loc_conf(ngx_conf_t *cf)
 	return conf;
 }
 
-
 static char *
 ngx_http_powshield_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 {
@@ -506,6 +499,10 @@ ngx_http_powshield_init(ngx_conf_t *cf)
 		return NGX_ERROR;
 	}
 	cf_pool = cf->pool;
+	for (int i = 0; i < TABLE_SIZE; i++) {
+		ngx_rbtree_init(&challenges[i].rbtree, &challenges[i].sentinel,
+				ngx_rbtree_insert_value);
+	}
 
 	return NGX_OK;
 }
