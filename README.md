@@ -10,11 +10,11 @@ To build this module you will need to download nginx source code first.
 Clone Pow Shield repository outside of the nginx source folder.
 In the nginx source code directory uses the command :
 
-./auto/configure --add-dynamic-module=[path to PoW-Shield repo]
+./auto/configure --add-dynamic-module=[absolute path to PoW-Shield repo]
 
 This will build PoW Shield as a dynamically loadable module.
 If you want to build the module for a pre-compiled nginx server, you will need
-to get the source code of the same nginx version as the pre-built nginx.
+to get the source code of the same version as the pre-built nginx.
 You will also need to compile it with the same flags. To see with which flags
 a nginx binary was built with, use the command 'nginx -V'.
 
@@ -24,3 +24,8 @@ In your nginx configuration file, add 'powshield "on";' to a server or a locatio
 The protection can also be disabled for specific URLs with 'powshield "off";'
 
 ![pic1](./img/conf.png)
+
+If the module was built as a dynamic module, you will need to add at the top of
+your nginx configuration file the following line :
+
+load_module "/path/to/ngx_http_powshield_module.so";
