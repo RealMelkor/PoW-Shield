@@ -40,7 +40,7 @@ func resolve(url, id, answer string) ([]byte, error) {
 	return ioutil.ReadAll(resp.Body)
 }
 
-func request(url string, work uint32) {
+func request(url string, work uint32, repeat int) {
 
 	rawData := make([]byte, 36)
 	resp, err := http.Get(url)
@@ -57,6 +57,7 @@ func request(url string, work uint32) {
 	}
 	id := resp.Cookies()[0].Value
 	challenge := resp.Cookies()[1].Value
+	//ioutil.ReadAll(resp.Body)
 	resp.Body.Close()
 	
         data, err := base64.StdEncoding.DecodeString(challenge)
@@ -80,7 +81,7 @@ func request(url string, work uint32) {
 		i++
 	}
 
-	for i := 0; i < 100; i++ {
+	for i := 0; i < repeat; i++ {
 		data, err = resolve(url, id, answer)
 		if err != nil {
 			break
@@ -90,21 +91,30 @@ func request(url string, work uint32) {
 
 var count = 0
 
-func requestRoutine(url string, work uint32) {
+func requestRoutine(url string, work uint32, repeat int) {
 	for i := 0; ; i++ {
-		request(url, work)
-		count++
+		request(url, work, repeat)
+		count += repeat
 	}
 }
 
 func main() {
 	work := uint32(0x00005FFF)
+	repeat := 100
 	if len(os.Args) < 2 {
-		fmt.Println(os.Args[0] + " <url> [work]")
+		fmt.Println(os.Args[0] + " <url> [repeat] [work]")
 		return
 	}
 	if len(os.Args) > 2 {
-		i, err := strconv.ParseUint(os.Args[2], 16, 32)
+		i, err := strconv.Atoi(os.Args[2])
+		if err != nil {
+			fmt.Println("Invalid repeat value")
+			return
+		}
+		repeat = i
+	}
+	if len(os.Args) > 3 {
+		i, err := strconv.ParseUint(os.Args[3], 16, 32)
 		if err != nil {
 			fmt.Println("Invalid work value")
 			return
@@ -113,7 +123,7 @@ func main() {
 	}
 	start := time.Now().UnixMilli()
 	for i := 0; i < runtime.NumCPU(); i++ {
-		go requestRoutine(os.Args[1], work)
+		go requestRoutine(os.Args[1], work, repeat)
 	}
 	for {
 		time.Sleep(time.Second)

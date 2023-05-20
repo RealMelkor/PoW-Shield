@@ -449,8 +449,7 @@ ngx_http_powshield_handler(ngx_http_request_t *r)
 	out.buf = b;
 	out.next = NULL;
 
-	ngx_http_output_filter(r, &out);
-	return NGX_HTTP_OK;
+	return ngx_http_output_filter(r, &out);
 }
 
 static void *
