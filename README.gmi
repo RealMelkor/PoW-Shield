@@ -2,7 +2,25 @@
 
 A nginx module to add a proof-of-work challenge before accessing a page.
 
-In your nginx configuration file, add 'powshield "on";' to a server or a location.
-The proof of work protection can also be disabled using 'powshield "off";'.
-
 =>img/img.webp Demo
+
+## Build
+
+To build this module you will need to download nginx source code first.
+Clone Pow Shield repository outside of the nginx source folder.
+In the nginx source code directory uses the command :
+
+./auto/configure --add-dynamic-module=[path to PoW-Shield repo]
+
+This will build PoW Shield as a dynamically loadable module.
+If you want to build the module for a pre-compiled nginx server, you will need
+to get the source code of the same nginx version as the pre-built server.
+You will also need to compile it with the same flags. To see with which flags
+a nginx binary was built with, use the command 'nginx -V'.
+
+## Configuration
+
+In your nginx configuration file, add 'powshield "on";' to a server or a location.
+The protection can also be disabled for specific URLs with 'powshield "off";'
+
+=>img/conf.png Configuration
