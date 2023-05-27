@@ -23,9 +23,27 @@ a nginx binary was built with, use the command 'nginx -V'.
 In your nginx configuration file, add 'powshield "on";' to a server or a location.
 The protection can also be disabled for specific URLs with 'powshield "off";'
 
-![pic1](./img/conf.png)
+```nginx
+server {
+    listen      80;
+    server_name localhost;
+
+    root html;
+
+    powshield "restricted";
+    location /static {
+        powshield off;
+    }
+
+    location / {
+        index   index.html index.htm;
+    }
+}
+```
 
 If the module was built as a dynamic module, you will need to add at the top of
 your nginx configuration file the following line :
 
+```nginx
 load_module "/path/to/ngx_http_powshield_module.so";
+```
